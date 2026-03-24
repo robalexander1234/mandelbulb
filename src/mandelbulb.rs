@@ -86,9 +86,6 @@ impl Mandelbulb {
     // mandelbulb_DE
     //------------------------------------------------------------
     pub fn mandelbulb_DE(pos: Point3D) -> f64 {
-        // pos is the point we're testing (a Vec3)
-        // power is the exponent (8.0 for classic Mandelbulb)
-        // bailout is your MAX_LEN (2.0)
         let power = config::POWER;
         let bailout = config::BAILOUT;
         let max_iter: usize = config::MAX_ITER;
@@ -96,7 +93,7 @@ impl Mandelbulb {
         let mut dr: f64 = 1.0;
         let mut rr: f64 = 0.0;
 
-        for ii in 0..max_iter {
+        for _ii in 0..max_iter {
             rr = zz.mag();
 
             if rr > bailout {
@@ -104,26 +101,23 @@ impl Mandelbulb {
             }
 
             // Convert to spherical coordinates
-            // (same math as your point_pow)
             let theta: f64 = f64::acos(zz.zz / rr);
             let phi: f64 = f64::atan2(zz.yy, zz.xx);
 
-            // UPDATE THE DERIVATIVE — this is the new part
-            // It tracks how fast the orbit is expanding
+            // Update the running derivative
             dr = power * rr.powf(power - 1.0) * dr + 1.0;
 
-            // Raise to the power (same as your point_pow)
+            // Raise to the power
             let rn: f64 = rr.powf(power);
             let new_zz: Point3D = Point3D {
                 xx: rn * (theta * power).sin() * (phi * power).cos(),
                 yy: rn * (theta * power).sin() * (phi * power).sin(),
                 zz: rn * (theta * power).cos(),
             };
-            // Add c (= original position, this is the Mandelbulb variant)
+            // Add c (= original position, Mandelbulb variant)
             zz = &new_zz + &pos;
         }
-        // Distance estimate formula
-        // 0.5 * r * ln(r) / dr
+        // Distance estimate: 0.5 * r * ln(r) / dr
         let retval = (0.5 * rr * rr.ln() / dr).abs();
         retval
     }
@@ -137,24 +131,16 @@ impl Mandelbulb {
         let mut total_distance = 0.0;
         let max_dist: f64 = config::MAX_DIST;
 
-        for steps in 0..max_steps {
-            // Where are we along the ray right now?
+        for _steps in 0..max_steps {
             let current_pos: Point3D = &self.eye + &(&ray * total_distance);
-
-            // Ask the DE: how far to the nearest surface?
             let dist = Self::mandelbulb_DE(current_pos);
 
-            // Are we close enough to call it a hit?
             if dist < surface_eps {
                 return current_pos;
             }
 
-            // Step forward by the DE distance
-            // (this is why it's called "sphere tracing" — we step by
-            //  the radius of the largest safe sphere at each point)
             total_distance += dist;
 
-            // Have we gone too far?
             if total_distance > max_dist {
                 break;
             }
@@ -163,47 +149,60 @@ impl Mandelbulb {
         //return miss
         config::MISS
     }
+
     //------------------------------------------------------------
     // estimate_normal()
     //------------------------------------------------------------
     pub fn estimate_normal(hit: Point3D) -> Point3D {
-        let eps: f64 = 0.001;
-        let ex = Point3D {
-            xx: eps,
-            yy: 0.0,
-            zz: 0.0,
-        };
-        let ey = Point3D {
-            xx: 0.0,
-            yy: eps,
-            zz: 0.0,
-        };
-        let ez = Point3D {
-            xx: 0.0,
-            yy: 0.0,
-            zz: eps,
-        };
+        let eps: f64 = 0.01;
+        let ex = Point3D { xx: eps, yy: 0.0, zz: 0.0 };
+        let ey = Point3D { xx: 0.0, yy: eps, zz: 0.0 };
+        let ez = Point3D { xx: 0.0, yy: 0.0, zz: eps };
 
-        let ax = &hit + &ex;
-        let ay = &hit + &ey;
-        let az = &hit + &ez;
+        let dx = Self::mandelbulb_DE(&hit + &ex) - Self::mandelbulb_DE(&hit - &ex);
+        let dy = Self::mandelbulb_DE(&hit + &ey) - Self::mandelbulb_DE(&hit - &ey);
+        let dz = Self::mandelbulb_DE(&hit + &ez) - Self::mandelbulb_DE(&hit - &ez);
 
-        let bx = &hit - &ex;
-        let by = &hit - &ey;
-        let bz = &hit - &ez;
-
-        let dx = Self::mandelbulb_DE(ax) - Self::mandelbulb_DE(bx);
-        let dy = Self::mandelbulb_DE(ay) - Self::mandelbulb_DE(by);
-        let dz = Self::mandelbulb_DE(az) - Self::mandelbulb_DE(bz);
-
-        //return normal vector
-        let nn: Point3D = Point3D {
-            xx: dx,
-            yy: dy,
-            zz: dz,
-        };
-
+        let nn = Point3D { xx: dx, yy: dy, zz: dz };
         nn.norm()
+    }
+
+    //------------------------------------------------------------
+    // calculate_ao()
+    //------------------------------------------------------------
+    // Ambient occlusion: sample the DE at several points stepping
+    // outward along the normal. If the DE is much smaller than
+    // the step distance, nearby geometry is blocking light —
+    // darken the pixel. Returns a factor from 0.0 (fully
+    // occluded) to 1.0 (fully open).
+    //------------------------------------------------------------
+    pub fn calculate_ao(hit: Point3D, normal: Point3D) -> f64 {
+        let ao_steps: usize = 5;
+        let ao_step_size: f64 = 0.02;
+        let mut occlusion: f64 = 0.0;
+        let mut weight: f64 = 1.0;
+
+        for ii in 1..=ao_steps {
+            // Step outward along the normal
+            let step_dist = ao_step_size * (ii as f64);
+            let sample_pos = &hit + &(&normal * step_dist);
+
+            // How far is the nearest surface from this sample point?
+            let de = Self::mandelbulb_DE(sample_pos);
+
+            // If DE < step_dist, geometry is closer than expected —
+            // that means something is occluding this direction.
+            // The difference (step_dist - de) measures how much.
+            occlusion += weight * (step_dist - de).max(0.0);
+
+            // Each successive sample has less influence
+            weight *= 0.5;
+        }
+
+        // Convert occlusion accumulator to a 0..1 factor
+        // Scale by 5.0 to control AO intensity (higher = stronger)
+        let ao_factor = (1.0 - 5.0 * occlusion).max(0.0).min(1.0);
+        ao_factor
     }
 
     //------------------------------------------------------------
@@ -214,7 +213,7 @@ impl Mandelbulb {
         let light_pos = config::LIGHT_POS;
         let light_dir = (&light_pos - &position).norm();
 
-        // 2. Diffuse lighting
+        // 2. Diffuse lighting (Lambertian)
         let dd = normal.dot(light_dir);
         let diffuse_intensity = dd.max(0.0);
 
@@ -234,11 +233,16 @@ impl Mandelbulb {
             zz: 0.08,
         };
 
-        // 5. Final color
-        let final_color = &ambient_color + &(&base_color * diffuse_intensity);
+        // 5. Ambient occlusion
+        let ao = Self::calculate_ao(position, normal);
+
+        // 6. Final color = (ambient + diffuse) * AO
+        let lit_color = &ambient_color + &(&base_color * diffuse_intensity);
+        let final_color = &lit_color * ao;
 
         final_color
     }
+
     //------------------------------------------------------------
     // save_png()
     //------------------------------------------------------------
@@ -252,22 +256,21 @@ impl Mandelbulb {
         });
         img.save(filename).expect("Failed to save image");
     }
+
     //------------------------------------------------------------
     // render()
     //------------------------------------------------------------
     pub fn render(&mut self) {
         for yy in 0..self.height {
             for xx in 0..self.width {
-                // Generate the ray for this specific pixel
                 let ray: Point3D = self.get_ray(xx as f64, yy as f64);
                 let hit_result: Point3D = self.march(ray);
                 if hit_result != config::MISS {
-                    //We hit the Mandelbulb! Find its surface details.
                     let surface_normal: Point3D = Self::estimate_normal(hit_result);
                     let pixel_color: Point3D = self.shade(hit_result, surface_normal);
-                    let red = ((pixel_color.xx * 255.0) as u32) << 16;
-                    let green = ((pixel_color.yy * 255.0) as u32) << 8;
-                    let blue = (pixel_color.zz * 255.0) as u32;
+                    let red = ((pixel_color.xx.clamp(0.0, 1.0) * 255.0) as u32) << 16;
+                    let green = ((pixel_color.yy.clamp(0.0, 1.0) * 255.0) as u32) << 8;
+                    let blue = (pixel_color.zz.clamp(0.0, 1.0) * 255.0) as u32;
                     let color: u32 = red | green | blue;
                     self.image_buff[xx as usize][yy as usize] = color;
                 }
