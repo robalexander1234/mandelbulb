@@ -1,6 +1,7 @@
 use crate::Point3D;
 use crate::config;
 use image::{ImageBuffer, Rgb};
+use rayon::prelude::*;
 
 pub struct Mandelbulb {
     //Camera Position
@@ -65,24 +66,6 @@ impl Mandelbulb {
     }
 
     //------------------------------------------------------------
-    // get_ray()
-    //------------------------------------------------------------
-    pub fn get_ray(&self, pixel_x: f64, pixel_y: f64) -> Point3D {
-        // Convert pixel (0..width, 0..height) to normalized coords (-1..1)
-        // +0.5 centers the ray in the pixel
-        let uu = (2.0 * (pixel_x + 0.5) / (self.width as f64) - 1.0) * self.half_width;
-        let vv = (2.0 * (pixel_y + 0.5) / (self.height as f64) - 1.0) * self.half_height;
-
-        // Note: v is negated so y increases upward (screen y goes downward)
-        let mut tmp: Point3D = &self.forward + &(&self.right * uu);
-        tmp = &tmp - &(&self.up * vv);
-        let direction: Point3D = tmp.norm();
-
-        //return ray direction
-        direction
-    }
-
-    //------------------------------------------------------------
     // mandelbulb_DE
     //------------------------------------------------------------
     pub fn mandelbulb_DE(pos: Point3D) -> f64 {
@@ -123,47 +106,35 @@ impl Mandelbulb {
     }
 
     //------------------------------------------------------------
-    // march()
-    //------------------------------------------------------------
-    pub fn march(&self, ray: Point3D) -> Point3D {
-        let max_steps: usize = config::MAX_STEPS;
-        let surface_eps: f64 = config::SURFACE_EPS;
-        let mut total_distance = 0.0;
-        let max_dist: f64 = config::MAX_DIST;
-
-        for _steps in 0..max_steps {
-            let current_pos: Point3D = &self.eye + &(&ray * total_distance);
-            let dist = Self::mandelbulb_DE(current_pos);
-
-            if dist < surface_eps {
-                return current_pos;
-            }
-
-            total_distance += dist;
-
-            if total_distance > max_dist {
-                break;
-            }
-        }
-
-        //return miss
-        config::MISS
-    }
-
-    //------------------------------------------------------------
     // estimate_normal()
     //------------------------------------------------------------
     pub fn estimate_normal(hit: Point3D) -> Point3D {
         let eps: f64 = 0.01;
-        let ex = Point3D { xx: eps, yy: 0.0, zz: 0.0 };
-        let ey = Point3D { xx: 0.0, yy: eps, zz: 0.0 };
-        let ez = Point3D { xx: 0.0, yy: 0.0, zz: eps };
+        let ex = Point3D {
+            xx: eps,
+            yy: 0.0,
+            zz: 0.0,
+        };
+        let ey = Point3D {
+            xx: 0.0,
+            yy: eps,
+            zz: 0.0,
+        };
+        let ez = Point3D {
+            xx: 0.0,
+            yy: 0.0,
+            zz: eps,
+        };
 
         let dx = Self::mandelbulb_DE(&hit + &ex) - Self::mandelbulb_DE(&hit - &ex);
         let dy = Self::mandelbulb_DE(&hit + &ey) - Self::mandelbulb_DE(&hit - &ey);
         let dz = Self::mandelbulb_DE(&hit + &ez) - Self::mandelbulb_DE(&hit - &ez);
 
-        let nn = Point3D { xx: dx, yy: dy, zz: dz };
+        let nn = Point3D {
+            xx: dx,
+            yy: dy,
+            zz: dz,
+        };
         nn.norm()
     }
 
@@ -190,9 +161,7 @@ impl Mandelbulb {
             // How far is the nearest surface from this sample point?
             let de = Self::mandelbulb_DE(sample_pos);
 
-            // If DE < step_dist, geometry is closer than expected —
-            // that means something is occluding this direction.
-            // The difference (step_dist - de) measures how much.
+            // Difference (step_dist - de) measures occlusion
             occlusion += weight * (step_dist - de).max(0.0);
 
             // Each successive sample has less influence
@@ -200,7 +169,6 @@ impl Mandelbulb {
         }
 
         // Convert occlusion accumulator to a 0..1 factor
-        // Scale by 5.0 to control AO intensity (higher = stronger)
         let ao_factor = (1.0 - 5.0 * occlusion).max(0.0).min(1.0);
         ao_factor
     }
@@ -208,7 +176,10 @@ impl Mandelbulb {
     //------------------------------------------------------------
     // shade()
     //------------------------------------------------------------
-    pub fn shade(&self, position: Point3D, normal: Point3D) -> Point3D {
+    // Now a static method — it never needed &self, only config
+    // constants and other static methods.
+    //------------------------------------------------------------
+    pub fn shade(position: Point3D, normal: Point3D) -> Point3D {
         // 1. Light direction
         let light_pos = config::LIGHT_POS;
         let light_dir = (&light_pos - &position).norm();
@@ -260,21 +231,72 @@ impl Mandelbulb {
     //------------------------------------------------------------
     // render()
     //------------------------------------------------------------
+    // Strategy: copy all read-only camera fields into locals so
+    // the par_iter closure captures copies instead of &self.
+    // Collect pixel results into a Vec, then write to image_buff
+    // sequentially afterward — no borrow conflict.
+    //------------------------------------------------------------
     pub fn render(&mut self) {
-        for yy in 0..self.height {
-            for xx in 0..self.width {
-                let ray: Point3D = self.get_ray(xx as f64, yy as f64);
-                let hit_result: Point3D = self.march(ray);
-                if hit_result != config::MISS {
-                    let surface_normal: Point3D = Self::estimate_normal(hit_result);
-                    let pixel_color: Point3D = self.shade(hit_result, surface_normal);
-                    let red = ((pixel_color.xx.clamp(0.0, 1.0) * 255.0) as u32) << 16;
-                    let green = ((pixel_color.yy.clamp(0.0, 1.0) * 255.0) as u32) << 8;
-                    let blue = (pixel_color.zz.clamp(0.0, 1.0) * 255.0) as u32;
-                    let color: u32 = red | green | blue;
-                    self.image_buff[xx as usize][yy as usize] = color;
+        let width = self.width as usize;
+        let height = self.height as usize;
+        let len = width * height;
+
+        // Copy read-only fields — closure captures these, not &self
+        let eye = self.eye;
+        let forward = self.forward;
+        let right = self.right;
+        let up = self.up;
+        let half_width = self.half_width;
+        let half_height = self.half_height;
+        let img_w = self.width as f64;
+        let img_h = self.height as f64;
+
+        // Parallel computation — no mutation of self
+        let pixels: Vec<(usize, usize, u32)> = (0..len)
+            .into_par_iter()
+            .filter_map(|ii| {
+                let xx = ii % width;
+                let yy = ii / width;
+
+                // Inlined get_ray — avoids borrowing &self
+                let uu = (2.0 * (xx as f64 + 0.5) / img_w - 1.0) * half_width;
+                let vv = (2.0 * (yy as f64 + 0.5) / img_h - 1.0) * half_height;
+                let mut tmp = &forward + &(&right * uu);
+                tmp = &tmp - &(&up * vv);
+                let ray = tmp.norm();
+
+                // Inlined march — only needed eye
+                let mut total_distance = 0.0;
+                let mut hit = config::MISS;
+                for _ in 0..config::MAX_STEPS {
+                    let pos = &eye + &(&ray * total_distance);
+                    let dist = Self::mandelbulb_DE(pos);
+                    if dist < config::SURFACE_EPS {
+                        hit = pos;
+                        break;
+                    }
+                    total_distance += dist;
+                    if total_distance > config::MAX_DIST {
+                        break;
+                    }
                 }
-            }
+
+                if hit != config::MISS {
+                    let normal = Self::estimate_normal(hit);
+                    let pc = Self::shade(hit, normal);
+                    let r = ((pc.xx.clamp(0.0, 1.0) * 255.0) as u32) << 16;
+                    let g = ((pc.yy.clamp(0.0, 1.0) * 255.0) as u32) << 8;
+                    let b = (pc.zz.clamp(0.0, 1.0) * 255.0) as u32;
+                    Some((xx, yy, r | g | b))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Sequential write — trivially fast compared to ray marching
+        for (xx, yy, color) in pixels {
+            self.image_buff[xx][yy] = color;
         }
     }
 }
