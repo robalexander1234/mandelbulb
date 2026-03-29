@@ -227,7 +227,16 @@ impl Mandelbulb {
         });
         img.save(filename).expect("Failed to save image");
     }
-
+    //------------------------------------------------------------
+    // update_camera()
+    //------------------------------------------------------------
+    pub fn update_camera(&mut self, eye: Point3D) {
+        self.eye = eye;
+        self.forward = (&self.target - &eye).norm();
+        let tmp_right = self.forward.cross(config::UP);
+        self.right = tmp_right.norm();
+        self.up = self.right.cross(self.forward);
+    }
     //------------------------------------------------------------
     // render()
     //------------------------------------------------------------
@@ -236,13 +245,10 @@ impl Mandelbulb {
     // Collect pixel results into a Vec, then write to image_buff
     // sequentially afterward — no borrow conflict.
     //------------------------------------------------------------
-    pub fn render(&mut self) -> Vec<u32> {
+    pub fn render(&mut self, eye: Point3D, light: Point3D) -> Vec<u32> {
         let width = self.width as usize;
         let height = self.height as usize;
         let len = width * height;
-        let light = self.light;
-
-        let eye = self.eye;
         let forward = self.forward;
         let right = self.right;
         let up = self.up;

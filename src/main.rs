@@ -30,7 +30,12 @@ struct DemoApp {
     light_str: String,
     buffer: Vec<u32>, // Flat buffer, not tuples
     window: Window,
+    mb: Mandelbulb,
+    have_kbd: bool,
     have_bulb: bool,
+    orbit_cam: bool,
+    cam_theta: f64,
+    cam_update: usize,
 }
 
 // =============================================================================
@@ -46,6 +51,7 @@ impl Default for DemoApp {
         let eye_str: String = format!("{:.2}, {:.2}, {:.2}", eye.xx, eye.yy, eye.zz);
         let light_str: String = format!("{:.2}, {:.2}, {:.2}", light.xx, light.yy, light.zz);
         let buffer: Vec<u32> = vec![0; config::IMG_WIDTH as usize * config::IMG_HGT as usize];
+        let mut mb = mandelbulb::Mandelbulb::new(eye, light);
         let mut window = Window::new(
             "Fractal Viewer",
             config::IMG_WIDTH as usize,
@@ -54,6 +60,11 @@ impl Default for DemoApp {
         )
         .unwrap();
         let have_bulb: bool = false;
+        let have_kbd: bool = false;
+        let orbit_cam: bool = false;
+        let cam_theta: f64 = 0.0;
+        let cam_update: usize = 0;
+
         Self {
             eye,
             light,
@@ -61,7 +72,12 @@ impl Default for DemoApp {
             light_str,
             buffer,
             window,
+            mb,
+            have_kbd,
             have_bulb,
+            orbit_cam,
+            cam_theta,
+            cam_update,
         }
     }
 }
@@ -160,9 +176,38 @@ impl eframe::App for DemoApp {
                 .spacing([10.0, 10.0])
                 .show(ui, |ui| {
                     if ui.button("Draw PNG").clicked() {
-                        let mut mb = mandelbulb::Mandelbulb::new(self.eye, self.light);
-                        self.buffer = mb.render();
+                        self.buffer = self.mb.render(self.eye, self.light);
                         self.have_bulb = true;
+                    }
+                    if self.have_kbd == false {
+                        if ui.button("KBD On").clicked() {
+                            self.buffer = self.mb.render(self.eye, self.light);
+                            self.have_kbd = true;
+                            self.have_bulb = true;
+                        }
+                    } else {
+                        if ui.button("KBD Off").clicked() {
+                            self.buffer = self.mb.render(self.eye, self.light);
+                            self.have_kbd = false;
+                            self.have_bulb = true;
+                        }
+                    }
+                    if self.orbit_cam==false {
+                        if ui.button("Orbit Cam").clicked() {
+                            self.buffer = self.mb.render(self.eye, self.light);
+                            self.orbit_cam = true;
+                            self.have_bulb = true;
+                            self.cam_theta = 0.0;
+                            self.cam_update = 0;
+                        }
+                    
+                    } else {
+                        if ui.button("DeOrbit Cam").clicked() {
+                            self.orbit_cam = false;
+                            self.have_bulb = true;
+                            self.cam_theta = 0.0;
+                            self.cam_update = 0;
+                        }
                     }
                 });
             if self.have_bulb == true {
@@ -174,6 +219,56 @@ impl eframe::App for DemoApp {
                     )
                     .unwrap();
             }
+
+            if self.orbit_cam == true {
+                self.cam_update += 1;
+                if self.cam_update > 0 {
+                    let xx: f64 = 4.0 * self.cam_theta.cos();
+                    let zz: f64 = 4.0 * self.cam_theta.sin();
+                    self.eye.xx = xx;
+                    self.eye.zz = zz;
+                    // Update camera orientation to look at target
+                    self.mb.update_camera(self.eye);
+                    self.buffer = self.mb.render(self.eye, self.light);
+                    self.cam_update = 0;
+                    self.cam_theta += 0.2;
+                    ctx.request_repaint();
+                }
+            }
+            if self.have_kbd == true {
+                ctx.input(|i| {
+                    let mut keypress: bool = false;
+                    if i.key_down(egui::Key::W) {
+                        self.eye.zz -= 0.15;
+                        keypress = true;
+                    }
+                    if i.key_down(egui::Key::S) {
+                        self.eye.zz += 0.15;
+                        keypress = true;
+                    }
+                    if i.key_down(egui::Key::A) {
+                        self.eye.xx -= 0.15;
+                        keypress = true;
+                    }
+                    if i.key_down(egui::Key::D) {
+                        self.eye.xx += 0.15;
+                        keypress = true;
+                    }
+                    if i.key_down(egui::Key::Z) {
+                        self.eye.yy -= 0.15;
+                        keypress = true;
+                    }
+                    if i.key_down(egui::Key::X) {
+                        self.eye.yy += 0.15;
+                        keypress = true;
+                    }
+
+                    if keypress == true {
+                        self.buffer = self.mb.render(self.eye, self.light);
+                    }
+                });
+            }
+
             ui.add_space(15.0);
             // =================================================================
             // FOOTER
