@@ -21,8 +21,8 @@ pub const MISS: Point3D = Point3D {
 };
 pub const PI: f64 = std::f64::consts::PI;
 pub const FOV: f64 = PI / 6.0;
-pub const IMG_WIDTH: u32 = 1920;
-pub const IMG_HGT: u32 = 1080;
+pub const IMG_WIDTH: u32 = 640;
+pub const IMG_HGT: u32 = 480;
 pub const POWER: f64 = 10.0;
 pub const MAX_ITER: usize = 20;
 pub const BAILOUT: f64 = 2.0;

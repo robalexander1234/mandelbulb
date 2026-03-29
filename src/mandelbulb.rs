@@ -13,6 +13,7 @@ pub struct Mandelbulb {
     forward: Point3D, // Normalized direction the camera points
     right: Point3D,   // Normalized vector pointing to the camera's right
     up: Point3D,      // The "True Up" vector (orthogonal to forward/right)
+    light: Point3D,
 
     //Image Dimensions
     width: u32,  // Output image width in pixels
@@ -30,8 +31,7 @@ impl Mandelbulb {
     //------------------------------------------------------------
     // Constructor
     //------------------------------------------------------------
-    pub fn new() -> Self {
-        let eye = config::EYE;
+    pub fn new(eye: Point3D, light: Point3D) -> Self {
         let target = config::TARGET;
         let fov = config::FOV;
 
@@ -56,6 +56,7 @@ impl Mandelbulb {
             forward,
             right,
             up,
+            light,
             width,
             height,
             aspect_ratio,
@@ -179,9 +180,8 @@ impl Mandelbulb {
     // Now a static method — it never needed &self, only config
     // constants and other static methods.
     //------------------------------------------------------------
-    pub fn shade(position: Point3D, normal: Point3D) -> Point3D {
+    pub fn shade(position: Point3D, normal: Point3D, light_pos: Point3D) -> Point3D {
         // 1. Light direction
-        let light_pos = config::LIGHT_POS;
         let light_dir = (&light_pos - &position).norm();
 
         // 2. Diffuse lighting (Lambertian)
@@ -236,12 +236,12 @@ impl Mandelbulb {
     // Collect pixel results into a Vec, then write to image_buff
     // sequentially afterward — no borrow conflict.
     //------------------------------------------------------------
-    pub fn render(&mut self) {
+    pub fn render(&mut self) -> Vec<u32> {
         let width = self.width as usize;
         let height = self.height as usize;
         let len = width * height;
+        let light = self.light;
 
-        // Copy read-only fields — closure captures these, not &self
         let eye = self.eye;
         let forward = self.forward;
         let right = self.right;
@@ -251,21 +251,19 @@ impl Mandelbulb {
         let img_w = self.width as f64;
         let img_h = self.height as f64;
 
-        // Parallel computation — no mutation of self
-        let pixels: Vec<(usize, usize, u32)> = (0..len)
+        // Return flat buffer indexed by y * width + x
+        let buffer: Vec<u32> = (0..len)
             .into_par_iter()
-            .filter_map(|ii| {
+            .map(|ii| {
                 let xx = ii % width;
                 let yy = ii / width;
 
-                // Inlined get_ray — avoids borrowing &self
                 let uu = (2.0 * (xx as f64 + 0.5) / img_w - 1.0) * half_width;
                 let vv = (2.0 * (yy as f64 + 0.5) / img_h - 1.0) * half_height;
                 let mut tmp = &forward + &(&right * uu);
                 tmp = &tmp - &(&up * vv);
                 let ray = tmp.norm();
 
-                // Inlined march — only needed eye
                 let mut total_distance = 0.0;
                 let mut hit = config::MISS;
                 for _ in 0..config::MAX_STEPS {
@@ -283,20 +281,17 @@ impl Mandelbulb {
 
                 if hit != config::MISS {
                     let normal = Self::estimate_normal(hit);
-                    let pc = Self::shade(hit, normal);
+                    let pc = Self::shade(hit, normal, light);
                     let r = ((pc.xx.clamp(0.0, 1.0) * 255.0) as u32) << 16;
                     let g = ((pc.yy.clamp(0.0, 1.0) * 255.0) as u32) << 8;
                     let b = (pc.zz.clamp(0.0, 1.0) * 255.0) as u32;
-                    Some((xx, yy, r | g | b))
+                    r | g | b
                 } else {
-                    None
+                    0x000000 // Black background for misses
                 }
             })
             .collect();
 
-        // Sequential write — trivially fast compared to ray marching
-        for (xx, yy, color) in pixels {
-            self.image_buff[xx][yy] = color;
-        }
+        buffer
     }
 }
