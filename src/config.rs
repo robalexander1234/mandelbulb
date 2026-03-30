@@ -26,8 +26,8 @@ pub const IMG_HGT: u32 = 480;
 pub const POWER: f64 = 10.0;
 pub const MAX_ITER: usize = 20;
 pub const BAILOUT: f64 = 2.0;
-pub const MAX_STEPS: usize = 2000; // give up after this many steps
-pub const SURFACE_EPS: f64 = 0.000001; //"close enough" to count as a hit
+pub const MAX_STEPS: usize = 200; // give up after this many steps
+pub const SURFACE_EPS: f64 = 0.00001; //"close enough" to count as a hit
 pub const MAX_DIST: f64 = 10.0; //give up if we've walked this far
 pub const LIGHT_POS: Point3D = Point3D {
     xx: 2.0,
