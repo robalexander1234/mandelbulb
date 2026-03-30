@@ -25,6 +25,8 @@ struct DemoApp {
     have_bulb: bool,
     orbit_cam: bool,
     cam_theta: f64,
+    power: f64,
+    power_str: String,
     cam_update: usize,
     needs_texture_update: bool,
 }
@@ -40,7 +42,8 @@ impl Default for DemoApp {
         let light_str = format!("{:.2}, {:.2}, {:.2}", light.xx, light.yy, light.zz);
         let buffer = vec![0u32; config::IMG_WIDTH as usize * config::IMG_HGT as usize];
         let mb = Mandelbulb::new(eye, light);
-
+        let power = config::POWER;
+        let power_str = format!("{:.1}",power); 
         Self {
             eye,
             light,
@@ -53,6 +56,8 @@ impl Default for DemoApp {
             have_bulb: false,
             orbit_cam: false,
             cam_theta: 0.0,
+            power,
+            power_str,
             cam_update: 0,
             needs_texture_update: false,
         }
@@ -89,7 +94,7 @@ impl DemoApp {
 
     /// Render the mandelbulb and flag texture for update
     fn do_render(&mut self) {
-        self.buffer = self.mb.render(self.eye, self.light);
+        self.buffer = self.mb.render(self.eye, self.light,self.power);
         self.needs_texture_update = true;
         self.have_bulb = true;
     }
@@ -165,6 +170,23 @@ impl eframe::App for DemoApp {
                 });
 
                 ui.add_space(15.0);
+
+                // Bulb power
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Bulb Power").strong());
+                    let response = ui.text_edit_singleline(&mut self.power_str);
+                    if response.lost_focus() {
+                        let vals: Vec<f64> = self.power_str
+                            .split(',')
+                            .filter_map(|s| s.trim().parse().ok())
+                            .collect();
+                        self.power = vals[0];
+                    }
+                });
+
+                ui.add_space(15.0);
+
+
 
                 // Buttons
                 egui::Grid::new("button_grid")
@@ -273,7 +295,7 @@ impl eframe::App for DemoApp {
                         self.eye.xx, self.eye.yy, self.eye.zz
                     );
                     self.mb.update_camera(self.eye);
-                    self.buffer = self.mb.render(self.eye, self.light);
+                    self.buffer = self.mb.render(self.eye, self.light, self.power);
                     self.needs_texture_update = true;
                 }
             });
